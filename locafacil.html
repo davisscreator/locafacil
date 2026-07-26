@@ -2115,12 +2115,12 @@ async function gerarImagem() {
 
     // OBS
     if(al.obs){
-      y+=10;
-      rr(50,y,W-100,110,20); ctx.fillStyle='#1C1C1E'; ctx.fill();
-      ctx.fillStyle='#636366'; ctx.font='700 24px Arial'; ctx.fillText('OBSERVAÇÃO',84,y+42);
-      ctx.fillStyle='#AEAEB2'; ctx.font='500 28px Arial';
-      ctx.fillText(al.obs.substring(0,60)+(al.obs.length>60?'…':''),84,y+84);
-      y+=130;
+      y+=8;
+      rr(50,y,W-100,96,20); ctx.fillStyle='#1C1C1E'; ctx.fill();
+      ctx.fillStyle='#636366'; ctx.font='700 22px Arial'; ctx.fillText('OBSERVAÇÃO',84,y+36);
+      ctx.fillStyle='#AEAEB2'; ctx.font='500 26px Arial';
+      ctx.fillText(al.obs.substring(0,58)+(al.obs.length>58?'…':''),84,y+74);
+      y+=112;
     }
 
     // GRATO — card no espaço restante, sempre acima do footer
