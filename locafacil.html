@@ -1834,6 +1834,8 @@ function compartilhar(id) {
   }
   const rn = document.getElementById('recibo-nome');
   if (rn) rn.value = '';
+  const rd = document.getElementById('recibo-dias');
+  if (rd) rd.value = diasPadraoRecibo(a);
   openModal('modal-voucher');
 }
 
@@ -1888,6 +1890,12 @@ function valorPorExtenso(valor) {
   }
   if (!texto) texto = 'zero reais';
   return texto;
+}
+
+// dia(s) padrao do recibo: usa apenas a data de entrega (dia do evento),
+// pois o recolhimento normalmente e so a retirada dos itens
+function diasPadraoRecibo(al) {
+  return fmt(al.entrega);
 }
 
 // ── RECIBO FORMAL ──
@@ -1951,12 +1959,11 @@ async function gerarReciboFormal() {
     const extenso = valorPorExtenso(valor);
 
     // datas
-    const dE = fmt(al.entrega);
-    const dR = fmt(al.recolhimento);
-    const diasTexto = `${dE.slice(0,2)} e ${dR}`;
+    const diasTexto = (document.getElementById('recibo-dias')?.value||'').trim() || diasPadraoRecibo(al);
 
     const nomeRecibo = (document.getElementById('recibo-nome')?.value||'').trim() || al.cliente;
-    const corpo = `        Recebi de ${nomeRecibo}, a importância de R$ ${valorFmt} (${extenso}), referente à locação de ${itensTexto} para os dias ${diasTexto}.`;
+    const preposicao = /(\se\s|,)/.test(diasTexto) ? 'para os dias' : 'para o dia';
+    const corpo = `        Recebi de ${nomeRecibo}, a importância de R$ ${valorFmt} (${extenso}), referente à locação de ${itensTexto} ${preposicao} ${diasTexto}.`;
 
     // desenhar corpo com quebra de linha
     ctx.fillStyle='#0F0F0F';
@@ -2332,7 +2339,9 @@ function compartilharTexto() {
       <!-- actions -->
       <div style="margin-top:14px">
         <label style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;display:block">Nome completo no recibo (opcional)</label>
-        <input type="text" class="form-input" id="recibo-nome" placeholder="Deixe vazio para usar o nome do agendamento" style="margin-bottom:8px"/>
+        <input type="text" class="form-input" id="recibo-nome" placeholder="Deixe vazio para usar o nome do agendamento" style="margin-bottom:10px"/>
+        <label style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;display:block">Dia(s) do evento no recibo</label>
+        <input type="text" class="form-input" id="recibo-dias" placeholder="Ex: 25 e 26/07/2026" style="margin-bottom:8px"/>
         <button class="btn-secondary" onclick="gerarReciboFormal()" id="btn-recibo-formal" style="background:#fff;color:#0F0F0F;border:1.5px solid var(--border)">🧾 Recibo Formal</button>
       </div>
       <div style="display:flex;gap:10px;margin-top:10px;padding-bottom:8px">
