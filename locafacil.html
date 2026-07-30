@@ -911,6 +911,13 @@ function setDate() {
    PAINEL
 ════════════════════════════════════ */
 // ── RELATÓRIO ──
+let vendaExpandida = null;
+
+function toggleVenda(id) {
+  vendaExpandida = vendaExpandida === id ? null : id;
+  renderRelatorio();
+}
+
 let relMesOffset = 0; // 0 = mês atual, -1 = mês anterior, etc.
 
 function mudarMes(delta) {
@@ -998,27 +1005,59 @@ function renderRelatorio() {
   } else {
     listaEl.innerHTML = finalizados.sort((a,b)=>a.voltou?.localeCompare(b.voltou)).map(a => {
       const pago = a.pagamento === 'Sim';
+      const aberto = vendaExpandida === a.id;
       const badge = pago
         ? `<span class="badge badge-green">✅ Pago</span>`
         : `<span class="badge badge-red">⏳ A Receber</span>`;
       const btnPagar = !pago
-        ? `<button onclick="marcarPago(${a.id})" style="background:var(--green);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:800;font-family:Inter,sans-serif;cursor:pointer;margin-top:8px">💰 Marcar como Pago</button>`
+        ? `<button onclick="event.stopPropagation();marcarPago(${a.id})" style="background:var(--green);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:800;font-family:Inter,sans-serif;cursor:pointer;margin-top:8px">💰 Marcar como Pago</button>`
         : '';
+
+      const chipsDet = (a.itens||[]).filter(i=>i.qty>0).map(i=>{
+        const est=estoque.find(e=>e.id===i.id);
+        return est?`<span class="item-chip" style="font-size:14px">${est.nome} · ${i.qty} ${plural(i.qty,est.unidade)}</span>`:'';
+      }).join('');
+
+      const detalhes = !aberto ? '' : `
+        <div style="padding:14px 18px;background:var(--input-bg);border-top:1px solid var(--border)">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <div style="font-size:11px;font-weight:800;color:var(--orange);text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px">Entrega</div>
+              <div style="font-size:16px;font-weight:900;color:var(--text)">${fmt(a.entrega)}</div>
+              ${a.hora_entrega?`<div style="font-size:14px;font-weight:600;color:var(--text2)">às ${a.hora_entrega}</div>`:''}
+            </div>
+            <div>
+              <div style="font-size:11px;font-weight:800;color:#34C759;text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px">Recolhimento</div>
+              <div style="font-size:16px;font-weight:900;color:var(--text)">${fmt(a.recolhimento)}</div>
+              ${a.hora_recolhimento?`<div style="font-size:14px;font-weight:600;color:var(--text2)">às ${a.hora_recolhimento}</div>`:''}
+            </div>
+          </div>
+          ${a.endereco?`<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:5px">📍 ${a.endereco}</div>`:''}
+          ${a.fone?`<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:5px">📱 ${a.fone}</div>`:''}
+          ${chipsDet?`<div style="display:flex;flex-wrap:wrap;gap:5px;margin:10px 0">${chipsDet}</div>`:''}
+          ${a.pagamento?`<div style="font-size:14px;color:var(--text2);margin-top:6px"><b style="color:var(--text)">Pagamento:</b> ${a.pagamento}</div>`:''}
+          ${a.obs?`<div style="font-size:14px;color:var(--text2);margin-top:6px"><b style="color:var(--text)">Obs:</b> ${a.obs}</div>`:''}
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button onclick="event.stopPropagation();compartilhar(${a.id})" style="flex:1;background:var(--surface);border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:#007AFF">🧾 Recibo</button>
+            <button onclick="event.stopPropagation();editarAluguel(${a.id})" style="flex:1;background:var(--surface);border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:var(--orange)">✏️ Editar</button>
+          </div>
+        </div>`;
+
       return `
-      <div class="list-item" style="align-items:flex-start">
-        <div class="list-item-body">
-          <div class="list-item-name">${a.cliente}</div>
-          <div class="list-item-meta">Fechado em ${fmt(a.voltou)}</div>
-          <div style="margin-top:5px">${badge}</div>
-          ${btnPagar}
-        </div>
-        <div class="list-item-right">
-          <div style="font-size:17px;font-weight:900;color:${pago?'var(--green)':'var(--red)'}">${a.valor!=null?'R$ '+Number(a.valor).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</div>
-          <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
-            <button onclick="compartilhar(${a.id})" style="background:var(--input-bg);border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:#007AFF">🧾 Recibo</button>
-            <button onclick="editarAluguel(${a.id})" style="background:var(--input-bg);border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:var(--orange)">✏️ Editar</button>
+      <div onclick="toggleVenda(${a.id})" style="cursor:pointer;border-bottom:1px solid var(--border)">
+        <div class="list-item" style="align-items:flex-start;border-bottom:none">
+          <div class="list-item-body">
+            <div class="list-item-name">${a.cliente}</div>
+            <div class="list-item-meta">Fechado em ${fmt(a.voltou)}</div>
+            <div style="margin-top:5px">${badge}</div>
+            ${btnPagar}
+          </div>
+          <div class="list-item-right">
+            <div style="font-size:17px;font-weight:900;color:${pago?'var(--green)':'var(--red)'}">${a.valor!=null?'R$ '+Number(a.valor).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</div>
+            <div style="font-size:12px;font-weight:700;color:var(--text2);margin-top:8px">${aberto?'▲ Fechar':'▼ Detalhes'}</div>
           </div>
         </div>
+        ${detalhes}
       </div>`;
     }).join('');
   }
