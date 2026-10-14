@@ -556,15 +556,52 @@ if ('serviceWorker' in navigator) {
 let isOnline = navigator.onLine;
 let tempIdCounter = -1;
 
+// ── rede: nada pode ficar pendurado ──
+const TIMEOUT_MS = 12000;
+function comTimeout(p, ms = TIMEOUT_MS) {
+  return Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
+  ]);
+}
+// erro de rede (vale reenviar) x erro permanente (insistir não resolve)
+function ehErroDeRede(e) {
+  if (!e) return false;
+  if (e.code) return false;                 // erro do Postgres/PostgREST
+  const m = (e.message || '').toLowerCase();
+  return m.includes('timeout') || m.includes('network') || m.includes('fetch')
+      || m.includes('load failed') || m.includes('conexão') || m === '';
+}
+
 // fila de operações pendentes (criadas offline)
+const MAX_TENTATIVAS = 3;
+
 function getQueue() {
   try { return JSON.parse(localStorage.getItem('lince_sync_queue')||'[]'); } catch(e){ return []; }
 }
 function setQueue(q) {
   try { localStorage.setItem('lince_sync_queue', JSON.stringify(q)); } catch(e){}
 }
+function getFalhas() {
+  try { return JSON.parse(localStorage.getItem('lince_sync_falhas')||'[]'); } catch(e){ return []; }
+}
+function setFalhas(f) {
+  try { localStorage.setItem('lince_sync_falhas', JSON.stringify(f)); } catch(e){}
+}
+
 function queueOp(op) {
   const q = getQueue();
+  // várias edições no mesmo aluguel viram uma só
+  if (op.type === 'update') {
+    const i = q.findIndex(x => x.type==='update' && x.table===op.table && x.id===op.id);
+    if (i >= 0) {
+      q[i].payload = { ...q[i].payload, ...op.payload };
+      q[i].tentativas = 0;
+      setQueue(q); updateOfflineBadge(); return;
+    }
+  }
+  op.tentativas = 0;
+  op.quando = new Date().toISOString();
   q.push(op);
   setQueue(q);
   updateOfflineBadge();
@@ -578,56 +615,180 @@ async function processQueue() {
   if (!q.length) return;
   syncing = true;
   setSyncState('syncing');
-  showToast(`🔄 Sincronizando ${q.length} alteraç${q.length>1?'ões':'ão'}...`);
 
-  const remaining = [];
+  const restantes = [];
+  const falhas    = getFalhas();
+  const mapaIds   = {};   // tempId -> id real no banco
+
   for (const op of q) {
+    // op que aponta pra um registro recém-criado: usa o id real
+    if (op.id != null && mapaIds[op.id] != null) op.id = mapaIds[op.id];
+
+    // editar/apagar algo que nunca chegou ao banco não tem como dar certo
+    if (op.type !== 'insert' && typeof op.id === 'number' && op.id < 0) {
+      falhas.push({ ...op, motivo: 'o aluguel original nunca foi salvo no servidor' });
+      continue;
+    }
+
     try {
-      let error = null;
       if (op.type === 'insert') {
-        ({error} = await sb.from(op.table).insert(limparPayload(op.payload)));
+        const payload = limparPayload(op.payload);
+        // já foi salvo numa tentativa anterior? então não duplica
+        let jaExiste = null;
+        if (op.table === 'alugueis' && payload.cliente && payload.entrega) {
+          const { data } = await comTimeout(
+            sb.from('alugueis').select('id')
+              .eq('cliente', payload.cliente).eq('entrega', payload.entrega).limit(1)
+          );
+          if (data && data.length) jaExiste = data[0].id;
+        }
+        if (jaExiste != null) {
+          if (op.payload.tempId != null) mapaIds[op.payload.tempId] = jaExiste;
+        } else {
+          const { data, error } = await comTimeout(
+            sb.from(op.table).insert(payload).select('id')
+          );
+          if (error) throw error;
+          if (data && data[0] && op.payload.tempId != null) mapaIds[op.payload.tempId] = data[0].id;
+        }
       } else if (op.type === 'update') {
-        ({error} = await sb.from(op.table).update(limparPayload(op.payload)).eq('id', op.id));
+        const { error } = await comTimeout(
+          sb.from(op.table).update(limparPayload(op.payload)).eq('id', op.id)
+        );
+        if (error) throw error;
       } else if (op.type === 'delete') {
-        ({error} = await sb.from(op.table).delete().eq('id', op.id));
+        const { error } = await comTimeout(sb.from(op.table).delete().eq('id', op.id));
+        if (error) throw error;
       }
-      if (error) remaining.push(op);
     } catch(e) {
-      remaining.push(op);
+      op.tentativas = (op.tentativas||0) + 1;
+      if (op.tentativas >= MAX_TENTATIVAS || !ehErroDeRede(e)) {
+        falhas.push({ ...op, motivo: e.message || 'erro ao enviar' });
+      } else {
+        restantes.push(op);
+      }
     }
   }
-  setQueue(remaining);
+
+  setQueue(restantes);
+  setFalhas(falhas);
   syncing = false;
 
-  if (!remaining.length) {
-    showToast('✅ Tudo sincronizado!');
-    await loadAllData();
-    renderAll();
-  } else {
-    showToast(`⚠️ ${remaining.length} pendente${remaining.length>1?'s':''} — tentando de novo depois`);
-    setSyncState('error');
-  }
+  if (!restantes.length && !falhas.length) showToast('✅ Tudo sincronizado!');
+  else if (falhas.length) showToast(`⚠️ ${falhas.length} não sincronizou — toque no aviso amarelo`);
+
+  try { await loadAllData(); renderAll(); } catch(e) {}
   updateOfflineBadge();
 }
 
 // indicador de status offline
 function updateOfflineBadge() {
   let badge = document.getElementById('offline-badge');
-  const pend = getQueue().length;
-  if (!navigator.onLine || pend > 0) {
+  const pend   = getQueue().length;
+  const falhas = getFalhas().length;
+  if (!navigator.onLine || pend > 0 || falhas > 0) {
     if (!badge) {
       badge = document.createElement('div');
       badge.id = 'offline-badge';
-      badge.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#B87A00;color:#fff;padding:6px 16px;border-radius:20px;font-size:12px;font-weight:700;z-index:150;font-family:Inter,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.3)';
+      badge.onclick = abrirFilaSync;
+      badge.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);background:#B87A00;color:#fff;padding:8px 18px;border-radius:20px;font-size:12px;font-weight:700;z-index:150;font-family:Inter,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.3);cursor:pointer;max-width:90vw;text-align:center';
       document.body.appendChild(badge);
     }
+    badge.style.background = falhas > 0 ? '#C0392B' : '#B87A00';
     badge.textContent = !navigator.onLine
       ? `📴 Offline${pend>0?' · '+pend+' pendente'+(pend>1?'s':''):''}`
-      : `🔄 ${pend} aguardando sincronização`;
+      : falhas > 0
+        ? `⚠️ ${falhas} não sincronizou — toque para ver`
+        : `🔄 ${pend} aguardando sincronização`;
     badge.style.display = 'block';
   } else if (badge) {
     badge.style.display = 'none';
   }
+}
+
+// ── painel: o que está preso na fila ──
+function descreverOp(op) {
+  const acao = op.type === 'insert' ? 'Novo aluguel'
+             : op.type === 'update' ? 'Alteração'
+             : 'Exclusão';
+  const p = op.payload || {};
+  let quem = p.cliente || '';
+  if (!quem && op.id != null) {
+    const a = alugueis.find(x => x.id === op.id);
+    quem = a ? a.cliente : `registro #${op.id}`;
+  }
+  const quando = op.quando ? new Date(op.quando).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+  return { acao, quem: quem || '—', quando, detalhe: p.entrega ? `entrega ${fmt(p.entrega)}` : '' };
+}
+
+function abrirFilaSync() {
+  const q = getQueue();
+  const f = getFalhas();
+  const el = document.getElementById('fila-conteudo');
+  if (!el) return;
+
+  const linha = (op, tipo) => {
+    const d = descreverOp(op);
+    return `<div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div style="flex:1">
+          <div style="font-size:15px;font-weight:800;color:var(--text)">${d.quem}</div>
+          <div style="font-size:13px;color:var(--text2);margin-top:2px">${d.acao}${d.detalhe?' · '+d.detalhe:''}</div>
+          ${d.quando?`<div style="font-size:12px;color:var(--text3);margin-top:2px">Feito em ${d.quando}</div>`:''}
+          ${tipo==='falha'&&op.motivo?`<div style="font-size:12px;color:var(--red);margin-top:4px">${op.motivo}</div>`:''}
+        </div>
+        <span class="badge ${tipo==='falha'?'badge-red':'badge-yellow'}">${tipo==='falha'?'Falhou':'Na fila'}</span>
+      </div>
+    </div>`;
+  };
+
+  let html = '';
+  if (!q.length && !f.length) {
+    html = `<div class="empty" style="padding:30px"><div class="empty-icon">✅</div><div class="empty-title">Tudo sincronizado</div><div class="empty-text">Nenhuma alteração pendente</div></div>`;
+  } else {
+    if (f.length) {
+      html += `<div style="padding:12px 16px;background:var(--input-bg)">
+        <div style="font-size:12px;font-weight:800;color:var(--red);text-transform:uppercase;letter-spacing:.6px">Não entraram no servidor (${f.length})</div>
+        <div style="font-size:13px;color:var(--text2);margin-top:4px">Confira se esses aluguéis já estão na lista. Se não estiverem, cadastre de novo e depois descarte aqui.</div>
+      </div>`;
+      html += f.map(op => linha(op,'falha')).join('');
+    }
+    if (q.length) {
+      html += `<div style="padding:12px 16px;background:var(--input-bg)">
+        <div style="font-size:12px;font-weight:800;color:var(--yellow);text-transform:uppercase;letter-spacing:.6px">Aguardando envio (${q.length})</div>
+      </div>`;
+      html += q.map(op => linha(op,'fila')).join('');
+    }
+    html += `<div style="padding:16px;display:flex;flex-direction:column;gap:10px">
+      <button class="btn-primary" onclick="tentarSincronizarAgora()">🔄 Tentar sincronizar agora</button>
+      ${f.length?`<button class="btn-secondary" onclick="descartarFalhas()" style="color:var(--red)">🗑 Descartar as ${f.length} que falharam</button>`:''}
+    </div>`;
+  }
+
+  el.innerHTML = html;
+  openModal('modal-fila');
+}
+
+async function tentarSincronizarAgora() {
+  const falhas = getFalhas();
+  if (falhas.length) {        // devolve as falhas pra fila, zeradas
+    const q = getQueue();
+    falhas.forEach(op => { const {motivo, ...limpo} = op; limpo.tentativas = 0; q.push(limpo); });
+    setQueue(q);
+    setFalhas([]);
+  }
+  closeModal('modal-fila');
+  await processQueue();
+  abrirFilaSync();
+}
+
+function descartarFalhas() {
+  const f = getFalhas();
+  if (!confirm(`Descartar ${f.length} alteraç${f.length>1?'ões':'ão'} que não foram salvas?\n\nIsso não apaga nada do servidor — só limpa esta lista de pendências.`)) return;
+  setFalhas([]);
+  updateOfflineBadge();
+  abrirFilaSync();
+  showToast('Lista de pendências limpa');
 }
 
 window.addEventListener('online', () => { isOnline = true; updateOfflineBadge(); processQueue(); });
@@ -645,13 +806,19 @@ async function dbOp(type, table, payload, id) {
     try {
       let error = null;
       const clean = limparPayload(payload);
-      if (type === 'insert')      ({error} = await sb.from(table).insert(clean));
-      else if (type === 'update') ({error} = await sb.from(table).update(clean).eq('id', id));
-      else if (type === 'delete') ({error} = await sb.from(table).delete().eq('id', id));
+      if (type === 'insert')      ({error} = await comTimeout(sb.from(table).insert(clean)));
+      else if (type === 'update') ({error} = await comTimeout(sb.from(table).update(clean).eq('id', id)));
+      else if (type === 'delete') ({error} = await comTimeout(sb.from(table).delete().eq('id', id)));
       if (error) throw error;
       return { ok: true, offline: false };
     } catch(e) {
       console.error('dbOp error:', e);
+      if (!ehErroDeRede(e)) {
+        // erro permanente: reenviar não resolve, avisa na hora
+        setSyncState('error');
+        showToast('⚠️ Não foi possível salvar: ' + (e.message || 'erro no servidor'));
+        return { ok: false, offline: false };
+      }
       queueOp({type, table, payload, id});
       return { ok: true, offline: true };
     }
@@ -699,7 +866,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 let autoRefreshTimer = null;
 
+let ultimoRefresh = 0;
 async function silentRefresh() {
+  if (syncing) return;            // não concorre com a sincronização
+  ultimoRefresh = Date.now();
   try {
     await loadAllData();
     // re-render only the currently visible tab
@@ -730,10 +900,13 @@ async function bootApp() {
     processQueue();
     // auto-refresh every 30 seconds
     clearInterval(autoRefreshTimer);
-    autoRefreshTimer = setInterval(silentRefresh, 30000);
-    // also refresh when user comes back to the tab/app
+    autoRefreshTimer = setInterval(silentRefresh, 60000);
+    // ao voltar pro app: no máximo 1 recarga a cada 45s
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') silentRefresh();
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - ultimoRefresh < 45000) return;
+      silentRefresh();
+      processQueue();
     }, { once: false });
   } catch(e) {
     document.getElementById('loading-overlay').style.display = 'none';
@@ -764,10 +937,10 @@ async function loadAllData() {
     }
     throw new Error('offline sem backup');
   }
-  const [resE, resA] = await Promise.all([
+  const [resE, resA] = await comTimeout(Promise.all([
     sb.from('estoque').select('*').order('id').limit(500),
     sb.from('alugueis').select('*').order('entrega').limit(500)
-  ]);
+  ]));
   if (resE.error) throw resE.error;
   if (resA.error) throw resA.error;
   // deduplicate estoque by id keeping last occurrence
@@ -2296,6 +2469,18 @@ function compartilharTexto() {
         </button>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- MODAL FILA DE SINCRONIZAÇÃO -->
+<div class="modal-overlay hidden" id="modal-fila" onclick="overlayClose(event,'modal-fila')">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-header">
+      <div class="modal-title">Sincronização</div>
+      <button class="modal-close" onclick="closeModal('modal-fila')">✕</button>
+    </div>
+    <div class="modal-body"><div id="fila-conteudo"></div></div>
   </div>
 </div>
 
