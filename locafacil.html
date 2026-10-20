@@ -1181,11 +1181,11 @@ function renderRelatorio() {
   const fmt2 = v => `R$ ${v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
   document.getElementById('rel-faturamento').textContent   = fmt2(faturamento);
-  document.getElementById('rel-total-label').textContent   = `${finalizados.length} aluguel${finalizados.length!==1?'s':''} finalizado${finalizados.length!==1?'s':''}`;
+  document.getElementById('rel-total-label').textContent   = `${finalizados.length} ${finalizados.length===1?'aluguel finalizado':'aluguéis finalizados'}`;
   document.getElementById('rel-valor-pagos').textContent   = fmt2(valorPagos);
-  document.getElementById('rel-qtd-pagos').textContent     = `${nPagos} aluguel${nPagos!==1?'s':''}`;
+  document.getElementById('rel-qtd-pagos').textContent     = `${nPagos} ${nPagos===1?'aluguel':'aluguéis'}`;
   document.getElementById('rel-receber').textContent       = fmt2(receber);
-  document.getElementById('rel-qtd-receber').textContent   = `${naoPagearam.length} aluguel${naoPagearam.length!==1?'s':''}`;
+  document.getElementById('rel-qtd-receber').textContent   = `${naoPagearam.length} ${naoPagearam.length===1?'aluguel':'aluguéis'}`;
 
   // itens mais alugados (todos do mês, não só finalizados)
   const itemCount = {};
@@ -1264,6 +1264,10 @@ function renderRelatorio() {
             <button onclick="event.stopPropagation();compartilhar(${a.id})" style="flex:1;background:var(--surface);border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:#007AFF">🧾 Recibo</button>
             <button onclick="event.stopPropagation();editarAluguel(${a.id})" style="flex:1;background:var(--surface);border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:var(--orange)">✏️ Editar</button>
           </div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button onclick="event.stopPropagation();desfazerBaixa(${a.id})" style="flex:1;background:var(--surface);border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:var(--yellow)">↩️ Desfazer baixa</button>
+            <button onclick="event.stopPropagation();excluirVenda(${a.id})" style="flex:1;background:var(--surface);border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;font-family:Inter,sans-serif;cursor:pointer;color:var(--red)">🗑 Apagar</button>
+          </div>
         </div>`;
 
       return `
@@ -1277,6 +1281,10 @@ function renderRelatorio() {
           </div>
           <div class="list-item-right">
             <div style="font-size:17px;font-weight:900;color:${pago?'var(--green)':'var(--red)'}">${a.valor!=null?'R$ '+Number(a.valor).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</div>
+            <div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">
+              <button onclick="event.stopPropagation();desfazerBaixa(${a.id})" title="Desfazer baixa — volta para os ativos" style="background:var(--input-bg);border:none;border-radius:8px;width:38px;height:34px;font-size:17px;cursor:pointer;color:var(--yellow);line-height:1">↩️</button>
+              <button onclick="event.stopPropagation();excluirVenda(${a.id})" title="Apagar aluguel" style="background:var(--input-bg);border:none;border-radius:8px;width:38px;height:34px;font-size:17px;cursor:pointer;color:var(--red);line-height:1">🗑</button>
+            </div>
             <div style="font-size:12px;font-weight:700;color:var(--text2);margin-top:8px">${aberto?'▲ Fechar':'▼ Detalhes'}</div>
           </div>
         </div>
@@ -1581,6 +1589,47 @@ async function marcarPago(id) {
   showToast('💰 Pagamento registrado!');
 }
 
+// desfaz a baixa: o aluguel volta pra lista de ativos e sai do faturamento
+async function desfazerBaixa(id) {
+  const a = alugueis.find(x=>x.id===id);
+  if (!a) return;
+  const valorTxt = a.valor!=null
+    ? ` O valor de R$ ${Number(a.valor).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} sai do faturamento.`
+    : '';
+  if (!confirm(`Desfazer a baixa de ${a.cliente}?\n\nO aluguel volta para a lista de ativos e o recolhimento fica pendente de novo.${valorTxt}\n\nNada é apagado.`)) return;
+
+  // volta pro status certo conforme a data de entrega
+  const novoStatus = (a.entrega||'').slice(0,10) > today() ? 'agendado' : 'ativo';
+  setSyncState('syncing');
+  const res = await dbOp('update', 'alugueis', {status:novoStatus, voltou:null}, id);
+  a.status = novoStatus;
+  a.voltou = null;
+  vendaExpandida = null;
+  if (res.offline) { autoBackup(); renderAll(); showToast('📴 Baixa desfeita offline'); return; }
+  await loadAllData();
+  renderAll();
+  showToast('↩️ Baixa desfeita — aluguel voltou para os ativos');
+}
+
+// apaga de vez um aluguel já finalizado
+async function excluirVenda(id) {
+  const a = alugueis.find(x=>x.id===id);
+  if (!a) return;
+  const valorTxt = a.valor!=null
+    ? `\n\nO faturamento do mês cai R$ ${Number(a.valor).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}.`
+    : '';
+  if (!confirm(`APAGAR o aluguel de ${a.cliente}?${valorTxt}\n\nIsso apaga o registro para sempre — não dá para recuperar.\n\nSe foi só baixa dada antes da hora, use "Desfazer baixa" no lugar.`)) return;
+
+  setSyncState('syncing');
+  const res = await dbOp('delete', 'alugueis', null, id);
+  alugueis = alugueis.filter(x=>x.id!==id);
+  vendaExpandida = null;
+  if (res.offline) { autoBackup(); renderAll(); showToast('📴 Apagado offline'); return; }
+  await loadAllData();
+  renderAll();
+  showToast('🗑 Aluguel apagado — faturamento atualizado');
+}
+
 async function excluirAluguel(id) {
   if (!confirm('Excluir este aluguel?')) return;
   setSyncState('syncing');
@@ -1612,11 +1661,19 @@ function renderHistorico() {
   if (!fin.length) { el.innerHTML=`<div class="empty"><div class="empty-icon">📁</div><div class="empty-title">Nenhum finalizado</div><div class="empty-text">Os aluguéis concluídos aparecem aqui</div></div>`; return; }
   el.innerHTML = fin.map(a => {
     const chips=(a.itens||[]).filter(i=>i.qty>0).map(i=>{const est=estoque.find(e=>e.id===i.id);return est?`<span class="item-chip" style="font-size:14px">${est.nome} · ${i.qty} ${plural(i.qty,est.unidade)}</span>`:''}).join('');
-    return `<div class="aluguel-card" style="opacity:.85">
+    const pagoH = a.pagamento === 'Sim';
+    const badgePag = pagoH
+      ? `<span class="badge badge-green">✅ Pago</span>`
+      : `<span class="badge badge-red">⏳ A Receber</span>`;
+    return `<div class="aluguel-card" style="opacity:.9">
       <div class="aluguel-top">
         <div>
           <div class="aluguel-nome" style="font-size:20px">${a.cliente}</div>
           <div class="aluguel-info" style="font-size:14px">📤 ${fmt(a.entrega)}${a.hora_entrega?' às '+a.hora_entrega:''} → 📥 ${fmt(a.recolhimento)}${a.hora_recolhimento?' às '+a.hora_recolhimento:''}<br>✅ Voltou: ${fmt(a.voltou)}</div>
+          <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            ${badgePag}
+            ${a.valor!=null?`<span style="font-size:15px;font-weight:900;color:${pagoH?'var(--green)':'var(--red)'}">R$ ${Number(a.valor).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`:''}
+          </div>
         </div>
         <span class="badge badge-gray">Finalizado</span>
       </div>
@@ -1626,6 +1683,7 @@ function renderHistorico() {
         ${!pagoH?`<button class="action-btn success" onclick="marcarPago(${a.id})">💰 Marcar Pago</button>`:''}
         <button class="action-btn" onclick="compartilhar(${a.id})" style="color:#007AFF">🧾 Recibo</button>
         <button class="action-btn" onclick="editarAluguel(${a.id})" style="color:var(--orange)">✏️ Editar</button>
+        <button class="action-btn" onclick="desfazerBaixa(${a.id})" style="color:var(--yellow)">↩️ Desfazer baixa</button>
         <button class="action-btn danger" onclick="excluirHistorico(${a.id})">🗑</button>
       </div>
     </div>`;
