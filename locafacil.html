@@ -274,7 +274,6 @@ textarea.form-input{resize:vertical;min-height:72px;}
           <div class="sec-sub" id="painel-date">—</div>
         </div>
         <div style="display:flex;gap:6px;margin-top:4px">
-          <button onclick="abrirOrcamento()" style="background:var(--orange);border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:800;color:#fff;font-family:Inter,sans-serif;cursor:pointer;white-space:nowrap">📄 Orçamento</button>
           <button onclick="restoreFromBackup()" style="background:var(--input-bg);border:none;border-radius:8px;padding:6px 10px;font-size:11px;font-weight:700;color:var(--text2);font-family:Inter,sans-serif;cursor:pointer;white-space:nowrap" title="Restaurar backup local">🔒</button>
         </div>
       </div>
@@ -408,6 +407,16 @@ textarea.form-input{resize:vertical;min-height:72px;}
       <div class="sec-header"><div class="sec-title">Histórico</div><div class="sec-sub">Aluguéis finalizados</div></div>
       <div id="historico-list"></div>
     </div>
+
+    <!-- ORÇAMENTOS -->
+    <div id="tab-orcamentos" class="hidden">
+      <div class="sec-header"><div class="sec-title">Orçamentos</div><div class="sec-sub">Propostas feitas para clientes</div></div>
+      <button onclick="abrirOrcamento()" style="width:100%;background:var(--orange);border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:800;color:#fff;font-family:Inter,sans-serif;cursor:pointer;margin-bottom:16px;display:flex;align-items:center;justify-content:center;gap:8px">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg>
+        Novo orçamento
+      </button>
+      <div id="orc-lista-salvos"></div>
+    </div>
   </div>
 
   <button class="fab" onclick="openModalAluguel()">
@@ -430,7 +439,11 @@ textarea.form-input{resize:vertical;min-height:72px;}
     </button>
     <button class="nav-item" onclick="showTab('disponib',this)">
       <svg class="nav-icon" width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M19 19l-3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-      <span class="nav-label">Consultar</span>
+      <span class="nav-label">Consulta</span>
+    </button>
+    <button class="nav-item" id="nav-orcamentos" onclick="showTab('orcamentos',this)">
+      <svg class="nav-icon" width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M5 2h8l4 4v14H5V2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13 2v4h4M8 11h6M8 15h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span class="nav-label">Orçar</span>
     </button>
     <button class="nav-item" onclick="showTab('historico',this)">
       <svg class="nav-icon" width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M3 5h16M3 9h10M3 13h12M3 17h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -1077,17 +1090,20 @@ async function restoreFromBackup() {
    TABS
 ════════════════════════════════════ */
 function showTab(tab, btn) {
-  ['painel','estoque','alugueis','disponib','historico'].forEach(t =>
+  ['painel','estoque','alugueis','disponib','historico','orcamentos'].forEach(t =>
     document.getElementById('tab-'+t).classList.add('hidden'));
   document.getElementById('tab-'+tab).classList.remove('hidden');
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  // na aba de orçamentos o botão flutuante "Novo Aluguel" tapa os botões dos cards
+  const fab = document.querySelector('.fab');
+  if (fab) fab.style.display = tab === 'orcamentos' ? 'none' : '';
   // sempre busca dados frescos ao trocar de aba
   silentRefresh();
 }
 
 function renderAll() {
-  renderPainel(); renderEstoque(); renderAlugueis(); renderHistorico(); renderProximos();
+  renderPainel(); renderEstoque(); renderAlugueis(); renderHistorico(); renderProximos(); renderOrcamentosSalvos();
 }
 
 /* ════════════════════════════════════
@@ -1905,6 +1921,9 @@ async function salvarAluguel() {
     const o = orcamentos.find(x => x.id === veioDeOrcamento);
     if (o) o.convertido = true;
     autoBackup();
+    // redesenha a lista, senão o orçamento continua como "Em aberto"
+    // e ele converteria o mesmo orçamento duas vezes
+    renderOrcamentosSalvos();
   }
 }
 
@@ -2209,19 +2228,23 @@ async function salvarOrcamento(silencioso) {
     else { try { await loadAllData(); } catch(e){} }
   }
   autoBackup();
-  if (!silencioso) showToast('💾 Orçamento salvo');
+  renderOrcamentosSalvos();
+  if (!silencioso) {
+    // fecha o formulário e mostra a lista, pra ele ver que o orçamento entrou
+    closeModal('modal-orcamento');
+    showTab('orcamentos', document.getElementById('nav-orcamentos'));
+    showToast('💾 Orçamento salvo');
+  }
   setSyncState('ok');
   return true;
 }
 
+/* A lista de orçamentos salvos agora vive na aba "Orçar", não mais dentro do modal.
+   Esta função só garante que o formulário esteja visível e atualiza a lista da aba. */
 function trocarViewOrc(view) {
-  document.getElementById('orc-view-novo').style.display   = view === 'novo' ? 'block' : 'none';
-  document.getElementById('orc-view-salvos').style.display = view === 'salvos' ? 'block' : 'none';
-  document.getElementById('orc-tab-novo').style.background   = view === 'novo' ? 'var(--orange)' : 'var(--input-bg)';
-  document.getElementById('orc-tab-novo').style.color        = view === 'novo' ? '#fff' : 'var(--text2)';
-  document.getElementById('orc-tab-salvos').style.background = view === 'salvos' ? 'var(--orange)' : 'var(--input-bg)';
-  document.getElementById('orc-tab-salvos').style.color      = view === 'salvos' ? '#fff' : 'var(--text2)';
-  if (view === 'salvos') renderOrcamentosSalvos();
+  const novo = document.getElementById('orc-view-novo');
+  if (novo) novo.style.display = 'block';
+  renderOrcamentosSalvos();
 }
 
 function renderOrcamentosSalvos() {
@@ -2277,7 +2300,12 @@ function abrirOrcamentoSalvo(id) {
   orcLinhas = (o.itens||[]).map(i => ({ uid: ++orcSeq, desc:i.desc, qtd:i.qtd, unit:i.unit }));
   if (!orcLinhas.length) addLinhaOrc(); else renderLinhasOrc();
   document.getElementById('orc-titulo-form').textContent = 'Editando orçamento';
+  // sugestões vindas do estoque (o datalist também é usado na edição)
+  const dl = document.getElementById('orc-sugestoes');
+  if (dl) dl.innerHTML = estoque.map(e=>`<option value="${e.nome}"></option>`).join('');
   trocarViewOrc('novo');
+  // a lista de salvos agora fica na aba, então abrir um salvo precisa abrir o modal
+  openModal('modal-orcamento');
 }
 
 async function excluirOrcamento(id) {
@@ -3201,15 +3229,6 @@ function compartilharTexto() {
       <button class="modal-close" onclick="closeModal('modal-orcamento')">✕</button>
     </div>
     <div class="modal-body">
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
-        <button id="orc-tab-novo" onclick="trocarViewOrc('novo')" style="padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:800;font-family:Inter,sans-serif;cursor:pointer;background:var(--orange);color:#fff">📝 Novo</button>
-        <button id="orc-tab-salvos" onclick="trocarViewOrc('salvos')" style="padding:12px;border:none;border-radius:10px;font-size:14px;font-weight:800;font-family:Inter,sans-serif;cursor:pointer;background:var(--input-bg);color:var(--text2)">📋 Salvos</button>
-      </div>
-
-      <div id="orc-view-salvos" style="display:none">
-        <div id="orc-lista-salvos"></div>
-      </div>
 
       <div id="orc-view-novo">
       <div style="font-size:13px;font-weight:700;color:var(--text2);margin-bottom:10px" id="orc-titulo-form">Novo orçamento</div>
